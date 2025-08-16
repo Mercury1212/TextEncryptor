@@ -33,7 +33,7 @@
     .badge{font-size:11px;border:1px solid rgba(148,163,184,.25);padding:4px 8px;border-radius:999px}
     .status{min-height:20px;color:#cbd5e1}
 
-    /* small alignment fix so labels and textareas align even after removing/adding header  */
+    /* small alignment fix so labels and textareas align even after removing/adding header */
     .col { display:flex; flex-direction:column; gap:8px; }
     .control-row { display:flex; gap:10px; align-items:center; }
     .control-row > * { flex: 1 1 auto; }
@@ -46,26 +46,26 @@
     <div class="card">
       <!-- RESTORED HEADER -->
       <header>
-        <h1>🔐 Reversible Text Scrambler</h1>
-        <p class="sub">Scramble and unscramble text locally in your browser. Output intentionally looks like opaque random text (no visible salt/iv labels).</p>
+        <h1>🔐 Online Text Encryptor</h1>
+        <p class="sub">Encrypt and decrypt text in your browser. Output intentionally looks like opaque random text (no visible salt/iv labels).</p>
       </header>
 
       <div class="grid">
         <div class="col">
           <label for="input">Input</label>
-          <textarea id="input" placeholder="Type or paste text to scramble…"></textarea>
+          <textarea id="input" placeholder="Type or paste text to encrypt…"></textarea>
           <div class="btns" style="margin-top:6px">
-            <button id="btnScramble">Scramble ⮕</button>
+            <button id="btnScramble">Encypt ⮕</button>
             <button id="btnClearIn" class="secondary">Clear</button>
             <button id="btnPaste" class="secondary">Paste</button>
           </div>
         </div>
 
         <div class="col">
-          <label for="output">Scrambled result</label>
-          <textarea id="output" placeholder="Scrambled result will appear here…" ></textarea>
+          <label for="output">Output</label>
+          <textarea id="output" placeholder="Encrypted result will appear here…" ></textarea>
           <div class="btns" style="margin-top:6px">
-            <button id="btnUnscramble" class="success">⮜ Unscramble</button>
+            <button id="btnUnscramble" class="success">⮜ Decrypt</button>
             <button id="btnCopy" class="secondary">Copy</button>
             <button id="btnClearOut" class="secondary">Clear</button>
           </div>
@@ -125,7 +125,7 @@
       'raw', enc.encode(pass), {name:'PBKDF2'}, false, ['deriveKey']
     );
     return crypto.subtle.deriveKey(
-      {name:'PBKDF2', salt, iterations:150000, hash:'SHA-256'},
+      {name:'PBKDF2', salt, iterations:150009, hash:'SHA-256'},
       baseKey,
       {name:'AES-GCM', length:256},
       false,
@@ -238,4 +238,3 @@
 </script>
 </body>
 </html>
-
