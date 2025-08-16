@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reversible Text Scrambler</title>
+  <style>
+    :root{
+      --bg:#0b1220;--card:#0f172a;--muted:#94a3b8;--text:#e2e8f0;--accent:#38bdf8;--accent-2:#22c55e;--danger:#f43f5e;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;background:radial-gradient(1200px 800px at 10% -10%,#0b2a3a 0%,transparent 60%),radial-gradient(1200px 800px at 110% 10%,#1a1f61 0%,transparent 60%),var(--bg);color:var(--text)}
+    .wrap{max-width:900px;margin:40px auto;padding:24px}
+    .card{background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.02));border:1px solid rgba(148,163,184,.2);border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,.35);overflow:hidden}
+    header{padding:22px 22px 0}
+    h1{margin:0 0 6px;font-size:clamp(22px,4vw,32px);letter-spacing:.3px}
+    p.sub{margin:0 0 16px;color:var(--muted)}
+    .grid{display:grid;gap:16px;padding:22px}
+    @media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
+    textarea, input[type="password"], input[type="text"]{width:100%;background:#0b132b;border:1px solid rgba(148,163,184,.25);color:var(--text);padding:12px 14px;border-radius:12px;font-size:15px;outline:none}
+    textarea{min-height:210px;resize:vertical}
+    label{display:block;margin:2px 0 6px;color:#cbd5e1;font-size:13px}
+    .row{display:flex;gap:10px;align-items:center}
+    .btns{display:flex;flex-wrap:wrap;gap:10px}
+    button{appearance:none;border:1px solid transparent;background:var(--accent);color:#082032;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer;transition:.15s transform,.2s filter}
+    button.secondary{background:#1f2a44;color:var(--text);border-color:rgba(148,163,184,.25)}
+    button.success{background:var(--accent-2)}
+    button.danger{background:var(--danger);color:white}
+    button:active{transform:translateY(1px)}
+    .hint{font-size:12px;color:var(--muted)}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+    .footer{padding:6px 22px 18px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;align-items:center}
+    .badge{font-size:11px;border:1px solid rgba(148,163,184,.25);padding:4px 8px;border-radius:999px}
+    .status{min-height:20px;color:#cbd5e1}
+
+    /* small alignment fix so labels and textareas align even after removing/adding header */
+    .col { display:flex; flex-direction:column; gap:8px; }
+    .control-row { display:flex; gap:10px; align-items:center; }
+    .control-row > * { flex: 1 1 auto; }
+    /* make output visually similar to input but keep it writable (as before) */
+    #output { font-family: inherit; font-size: 14px; line-height:1.35; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <!-- RESTORED HEADER -->
+      <header>
+        <h1>🔐 Reversible Text Scrambler</h1>
+        <p class="sub">Scramble and unscramble text locally in your browser. Output intentionally looks like opaque random text (no visible salt/iv labels).</p>
+      </header>
+
+      <div class="grid">
+        <div class="col">
+          <label for="input">Input</label>
+          <textarea id="input" placeholder="Type or paste text to scramble…"></textarea>
+          <div class="btns" style="margin-top:6px">
+            <button id="btnScramble">Scramble ⮕</button>
+            <button id="btnClearIn" class="secondary">Clear</button>
+            <button id="btnPaste" class="secondary">Paste</button>
+          </div>
+        </div>
+
+        <div class="col">
+          <label for="output">Scrambled result</label>
+          <textarea id="output" placeholder="Scrambled result will appear here…" ></textarea>
+          <div class="btns" style="margin-top:6px">
+            <button id="btnUnscramble" class="success">⮜ Unscramble</button>
+            <button id="btnCopy" class="secondary">Copy</button>
+            <button id="btnClearOut" class="secondary">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid" style="padding-top:0">
+        <div>
+          <label for="password">Password</label>
+          <div class="control-row">
+            <input id="password" type="password" placeholder="Enter password (remember it!)" autocomplete="current-password" />
+            <button id="togglePw" class="secondary" title="Show/Hide">👁</button>
+          </div>
+          <div class="hint">Uses AES-GCM with PBKDF2. Output is an opaque URL-safe base64 string (no <code>+</code>, <code>/</code>, or <code>=</code>).</div>
+        </div>
+
+        <div>
+          <label style="opacity:.7">Output style</label>
+          <input type="text" value="opaque URL-safe base64 (salt+iv+ciphertext)" readonly class="mono" />
+        </div>
+      </div>
+
+      <div class="footer">
+        <div class="status" id="status">Ready.</div>
+        <button id="btnWipe" class="danger">Wipe All</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(async () => {
+  const qs = (s) => document.querySelector(s);
+  const input = qs('#input');
+  const output = qs('#output');
+  const password = qs('#password');
+  const statusEl = qs('#status');
+
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+
+  // URL-safe base64 helpers (no + /, no =)
+  function b64UrlEncode(buf){
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+  function b64UrlDecode(str){
+    // bring back padding
+    let s = str.replace(/-/g,'+').replace(/_/g,'/');
+    const pad = (4 - (s.length % 4)) % 4;
+    s += '='.repeat(pad);
+    const bytes = Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    return bytes;
+  }
+
+  async function deriveKey(pass, salt){
+    const baseKey = await crypto.subtle.importKey(
+      'raw', enc.encode(pass), {name:'PBKDF2'}, false, ['deriveKey']
+    );
+    return crypto.subtle.deriveKey(
+      {name:'PBKDF2', salt, iterations:150000, hash:'SHA-256'},
+      baseKey,
+      {name:'AES-GCM', length:256},
+      false,
+      ['encrypt','decrypt']
+    );
+  }
+
+  function setStatus(msg){ statusEl.textContent = msg; }
+  function guardPw(){ if(!password.value){ throw new Error('Please enter a password.'); } }
+
+  // Scramble: produce salt(16) || iv(12) || ciphertext, then URL-safe base64 encode whole blob
+  async function scramble(){
+    guardPw();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const key = await deriveKey(password.value, salt);
+    const data = enc.encode(input.value);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, data));
+
+    // assemble: salt + iv + ct
+    const blob = new Uint8Array(salt.length + iv.length + ct.length);
+    blob.set(salt, 0);
+    blob.set(iv, salt.length);
+    blob.set(ct, salt.length + iv.length);
+
+    output.value = b64UrlEncode(blob);
+    setStatus('Scrambled ✔');
+  }
+
+  // Unscramble: decode blob, slice salt(16), iv(12), rest is ciphertext
+  async function unscramble(){
+    guardPw();
+    const raw = (output.value || input.value || '').trim();
+    if(!raw){ throw new Error('Nothing to unscramble.'); }
+
+    let bytes;
+    try {
+      bytes = b64UrlDecode(raw);
+    } catch(e){
+      throw new Error('Invalid format: not a valid base64 string.');
+    }
+
+    if(bytes.length <= 28){ // minimum: 16 + 12 = 28, plus some ciphertext
+      throw new Error('Data too short or corrupted.');
+    }
+
+    const salt = bytes.slice(0,16);
+    const iv = bytes.slice(16,28);
+    const ct = bytes.slice(28);
+
+    const key = await deriveKey(password.value, salt);
+    let pt;
+    try{
+      pt = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct);
+    }catch(e){
+      throw new Error('Decryption failed. Wrong password or corrupted data.');
+    }
+    input.value = dec.decode(pt);
+    setStatus('Unscrambled ✔');
+  }
+
+  function copyOut(){
+    if(!output.value) return setStatus('Nothing to copy.');
+    navigator.clipboard.writeText(output.value).then(()=>setStatus('Copied output.'));
+  }
+
+  function wipe(){ input.value=''; output.value=''; password.value=''; setStatus('Cleared all fields.'); }
+
+  // Buttons
+  qs('#btnScramble').addEventListener('click', () => handle(scramble));
+  qs('#btnUnscramble').addEventListener('click', () => handle(unscramble));
+  qs('#btnCopy').addEventListener('click', () => handle(copyOut));
+  qs('#btnClearIn').addEventListener('click', () => { input.value=''; setStatus('Cleared input.'); });
+  qs('#btnClearOut').addEventListener('click', () => { output.value=''; setStatus('Cleared output.'); });
+  qs('#btnPaste').addEventListener('click', async () => {
+    try{
+      const t = await navigator.clipboard.readText();
+      input.value = t; setStatus('Pasted into input.');
+    }catch{ setStatus('Clipboard paste blocked by browser.'); }
+  });
+  qs('#btnWipe').addEventListener('click', wipe);
+  qs('#togglePw').addEventListener('click', () => {
+    password.type = password.type === 'password' ? 'text' : 'password';
+  });
+
+  async function handle(fn){
+    try{
+      setStatus('Working…');
+      await fn();
+    }catch(err){ setStatus(err.message); }
+  }
+
+  // Drag & drop support (drop a .txt containing either plain text or the opaque string)
+  for(const area of [input, output]){
+    area.addEventListener('dragover', e=>{ e.preventDefault(); area.style.borderColor='var(--accent)'; });
+    area.addEventListener('dragleave', ()=>{ area.style.borderColor='rgba(148,163,184,.25)'; });
+    area.addEventListener('drop', async e=>{
+      e.preventDefault(); area.style.borderColor='rgba(148,163,184,.25)';
+      const file = e.dataTransfer.files?.[0];
+      if(file){ const text = await file.text(); area.value = text; setStatus('Loaded dropped file.'); }
+    });
+  }
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e)=>{
+    if(e.ctrlKey && e.key.toLowerCase()==='e'){ e.preventDefault(); handle(scramble); }
+    if(e.ctrlKey && e.key.toLowerCase()==='d'){ e.preventDefault(); handle(unscramble); }
+  });
+})();
+</script>
+</body>
+</html>
