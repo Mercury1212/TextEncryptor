@@ -39,6 +39,7 @@
     .loader { display: none; border: 3px solid rgba(255,255,255,0.1); border-radius: 50%; border-top: 3px solid var(--accent); width: 16px; height: 16px; animation: spin 1s linear infinite; margin-right: 8px; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     .loading { display: inline-flex; align-items: center; }
+    #fileInput { display: none; }
   </style>
 </head>
 <body>
@@ -55,6 +56,8 @@
           <textarea id="input" placeholder="Type or paste text to encrypt..."></textarea>
           <div class="btns" style="margin-top:6px">
             <button id="btnScramble">Encrypt ⮕</button>
+            <button id="btnOpenIn" class="secondary">Open</button>
+            <button id="btnSaveIn" class="secondary">Save as</button>
             <button id="btnCopyIn" class="secondary">Copy</button>
             <button id="btnClearIn" class="secondary">Clear</button>
           </div>
@@ -65,6 +68,8 @@
           <textarea id="output" placeholder="Encrypted result will appear here..."></textarea>
           <div class="btns" style="margin-top:6px">
             <button id="btnUnscramble" class="success">⮜ Decrypt</button>
+            <button id="btnOpenOut" class="secondary">Open</button>
+            <button id="btnSaveOut" class="secondary">Save as</button>
             <button id="btnCopy" class="secondary">Copy</button>
             <button id="btnClearOut" class="secondary">Clear</button>
           </div>
@@ -101,6 +106,9 @@
     </div>
   </div>
 
+  <!-- Hidden file input for opening files -->
+  <input type="file" id="fileInput" accept=".txt,.text,.json,.md" />
+
   <!-- Load argon2-browser (bundled; exposes window.argon2) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/argon2-browser/1.18.0/argon2-bundled.min.js"></script>
 
@@ -113,6 +121,8 @@
     const statusEl = qs('#status');
     const argonPreset = qs('#argonPreset');
     const paramInfo = qs('#paramInfo');
+    const fileInput = qs('#fileInput');
+    let currentFileTarget = null;
 
     function setStatus(msg, isWorking = false){
       if (isWorking) {
@@ -122,13 +132,11 @@
       }
     }
 
-    // Secure-context check (crypto.subtle needs HTTPS or http://localhost)
     if (!window.isSecureContext) {
       setStatus('This page must be served over HTTPS or http://localhost for Web Crypto.', false);
       return;
     }
 
-    // Wait for Argon2 WASM to be ready (bundled build exposes a ready Promise)
     try {
       if (window.argon2 && argon2.ready) {
         await argon2.ready;
@@ -148,9 +156,9 @@
     const dec = new TextDecoder();
 
     const argonParams = {
-      interactive: { time: 2, mem: 65536,  parallelism: 1 }, // 32MB
-      moderate:    { time: 3, mem: 524288,  parallelism: 1 }, // 64MB
-      sensitive:   { time: 5, mem: 1048576, parallelism: 1 }  // 128MB
+      interactive: { time: 2, mem: 65536,  parallelism: 1 },
+      moderate:    { time: 3, mem: 524288,  parallelism: 1 },
+      sensitive:   { time: 5, mem: 1048576, parallelism: 1 }
     };
 
     function updateParamInfo() {
@@ -174,21 +182,16 @@
 
     async function deriveKey(pass, salt){
       const p = argonParams[argonPreset.value];
-      try {
-        const { hash } = await argon2.hash({
-          pass,
-          salt,
-          time: p.time,
-          mem: p.mem,
-          hashLen: 32,
-          parallelism: p.parallelism,
-          type: argon2.ArgonType.Argon2id
-        });
-        return crypto.subtle.importKey('raw', hash, { name: 'AES-GCM' }, false, ['encrypt','decrypt']);
-      } catch (e) {
-        console.error('Argon2 error:', e);
-        throw new Error('Key derivation failed. Try a lower memory preset.');
-      }
+      const { hash } = await argon2.hash({
+        pass,
+        salt,
+        time: p.time,
+        mem: p.mem,
+        hashLen: 32,
+        parallelism: p.parallelism,
+        type: argon2.ArgonType.Argon2id
+      });
+      return crypto.subtle.importKey('raw', hash, { name: 'AES-GCM' }, false, ['encrypt','decrypt']);
     }
 
     function guardPw(){ 
@@ -256,6 +259,70 @@
 
     function wipe(){ input.value=''; output.value=''; password.value=''; setStatus('All fields cleared.'); }
 
+    async function saveAsText(text, defaultName) {
+      if (!window.showSaveFilePicker) {
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = defaultName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: defaultName,
+          types: [
+            {
+              description: 'Text/JSON/Markdown',
+              accept: {
+                'text/plain': ['.txt'],
+                'application/json': ['.json'],
+                'text/markdown': ['.md']
+              }
+            }
+          ]
+        });
+
+        const writable = await handle.createWritable();
+        await writable.write(text);
+        await writable.close();
+        setStatus(`Saved as ${handle.name}`);
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          setStatus('Save failed.');
+          console.error(err);
+        } else {
+          setStatus('Save canceled.');
+        }
+      }
+    }
+
+    function openFile(targetElement) {
+      currentFileTarget = targetElement;
+      fileInput.click();
+    }
+
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        if (currentFileTarget) {
+          currentFileTarget.value = text;
+          setStatus(`Loaded ${file.name}`);
+        }
+      } catch (err) {
+        setStatus('Error reading file.');
+        console.error(err);
+      }
+      fileInput.value = '';
+    });
+
     async function handle(fn){
       try{ await fn(); }
       catch(err){ setStatus(err.message); console.error(err); }
@@ -270,6 +337,18 @@
     qs('#btnClearOut').addEventListener('click', () => { output.value=''; setStatus('Output cleared.'); });
     qs('#btnWipe').addEventListener('click', wipe);
     qs('#togglePw').addEventListener('click', () => { password.type = password.type === 'password' ? 'text' : 'password'; });
+    
+    // Open / Save buttons
+    qs('#btnOpenIn').addEventListener('click', () => openFile(input));
+    qs('#btnOpenOut').addEventListener('click', () => openFile(output));
+    qs('#btnSaveIn').addEventListener('click', async () => {
+      if (!input.value) return setStatus('Nothing to save.');
+      await saveAsText(input.value, 'input.txt');
+    });
+    qs('#btnSaveOut').addEventListener('click', async () => {
+      if (!output.value) return setStatus('Nothing to save.');
+      await saveAsText(output.value, 'output.txt');
+    });
 
     // Drag & drop
     for(const area of [input, output]){
@@ -292,4 +371,4 @@
   })();
   </script>
 </body>
-</html>
+</html
