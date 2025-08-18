@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Reversible Text Scrambler</title>
+  <title>Reversible Text Encryptor (Argon2id)</title>
   <style>
     :root{
       --bg:#0b1220;--card:#0f172a;--muted:#94a3b8;--text:#e2e8f0;--accent:#38bdf8;--accent-2:#22c55e;--danger:#f43f5e;
@@ -32,38 +32,37 @@
     .footer{padding:6px 22px 18px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;align-items:center}
     .badge{font-size:11px;border:1px solid rgba(148,163,184,.25);padding:4px 8px;border-radius:999px}
     .status{min-height:20px;color:#cbd5e1}
-
-    /* small alignment fix so labels and textareas align even after removing/adding header */
     .col { display:flex; flex-direction:column; gap:8px; }
     .control-row { display:flex; gap:10px; align-items:center; }
     .control-row > * { flex: 1 1 auto; }
-    /* make output visually similar to input but keep it writable (as before) */
     #output { font-family: inherit; font-size: 14px; line-height:1.35; }
+    .loader { display: none; border: 3px solid rgba(255,255,255,0.1); border-radius: 50%; border-top: 3px solid var(--accent); width: 16px; height: 16px; animation: spin 1s linear infinite; margin-right: 8px; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .loading { display: inline-flex; align-items: center; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <!-- RESTORED HEADER -->
       <header>
-        <h1>🔐 Online Text Encryptor</h1>
-        <p class="sub">Encrypt and decrypt text in your browser. Output intentionally looks like opaque random text (no visible salt/iv labels).</p>
+        <h1>🔐 Argon2id Text Encryptor</h1>
+        <p class="sub">Encrypt and decrypt text in your browser using Argon2id key derivation.</p>
       </header>
 
       <div class="grid">
         <div class="col">
           <label for="input">Input</label>
-          <textarea id="input" placeholder="Type or paste text to encrypt…"></textarea>
+          <textarea id="input" placeholder="Type or paste text to encrypt..."></textarea>
           <div class="btns" style="margin-top:6px">
-            <button id="btnScramble">Encypt ⮕</button>
+            <button id="btnScramble">Encrypt ⮕</button>
+            <button id="btnCopyIn" class="secondary">Copy</button>
             <button id="btnClearIn" class="secondary">Clear</button>
-            <button id="btnPaste" class="secondary">Paste</button>
           </div>
         </div>
 
         <div class="col">
           <label for="output">Output</label>
-          <textarea id="output" placeholder="Encrypted result will appear here…" ></textarea>
+          <textarea id="output" placeholder="Encrypted result will appear here..."></textarea>
           <div class="btns" style="margin-top:6px">
             <button id="btnUnscramble" class="success">⮜ Decrypt</button>
             <button id="btnCopy" class="secondary">Copy</button>
@@ -79,12 +78,19 @@
             <input id="password" type="password" placeholder="Enter password (remember it!)" autocomplete="current-password" />
             <button id="togglePw" class="secondary" title="Show/Hide">👁</button>
           </div>
-          <div class="hint">Uses AES-GCM with PBKDF2. Output is an opaque URL-safe base64 string (no <code>+</code>, <code>/</code>, or <code>=</code>).</div>
+          <div class="hint">Uses AES-GCM with Argon2id. Output is URL-safe base64 (salt+iv+ciphertext).</div>
         </div>
 
         <div>
-          <label style="opacity:.7">Output style</label>
-          <input type="text" value="opaque URL-safe base64 (salt+iv+ciphertext)" readonly class="mono" />
+          <label style="opacity:.7">Security Parameters</label>
+          <div class="control-row">
+            <select id="argonPreset" class="secondary" style="flex:1; padding:12px 14px; background:#0b132b; border-radius:12px; color:var(--text);">
+              <option value="interactive">Interactive (faster)</option>
+              <option value="moderate" selected>Moderate (balanced)</option>
+              <option value="sensitive">Sensitive (stronger)</option>
+            </select>
+          </div>
+          <div class="hint" id="paramInfo">Time: 3, Memory: 64MB, Parallelism: 1</div>
         </div>
       </div>
 
@@ -95,146 +101,195 @@
     </div>
   </div>
 
-<script>
-(async () => {
-  const qs = (s) => document.querySelector(s);
-  const input = qs('#input');
-  const output = qs('#output');
-  const password = qs('#password');
-  const statusEl = qs('#status');
+  <!-- Load argon2-browser (bundled; exposes window.argon2) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/argon2-browser/1.18.0/argon2-bundled.min.js"></script>
 
-  const enc = new TextEncoder();
-  const dec = new TextDecoder();
+  <script>
+  (async () => {
+    const qs = (s) => document.querySelector(s);
+    const input = qs('#input');
+    const output = qs('#output');
+    const password = qs('#password');
+    const statusEl = qs('#status');
+    const argonPreset = qs('#argonPreset');
+    const paramInfo = qs('#paramInfo');
 
-  // URL-safe base64 helpers (no + /, no =)
-  function b64UrlEncode(buf){
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-    return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  }
-  function b64UrlDecode(str){
-    // bring back padding
-    let s = str.replace(/-/g,'+').replace(/_/g,'/');
-    const pad = (4 - (s.length % 4)) % 4;
-    s += '='.repeat(pad);
-    const bytes = Uint8Array.from(atob(s), c => c.charCodeAt(0));
-    return bytes;
-  }
+    function setStatus(msg, isWorking = false){
+      if (isWorking) {
+        statusEl.innerHTML = '<span class="loading"><span class="loader"></span>' + msg + '</span>';
+      } else {
+        statusEl.textContent = msg;
+      }
+    }
 
-  async function deriveKey(pass, salt){
-    const baseKey = await crypto.subtle.importKey(
-      'raw', enc.encode(pass), {name:'PBKDF2'}, false, ['deriveKey']
-    );
-    return crypto.subtle.deriveKey(
-      {name:'PBKDF2', salt, iterations:150009, hash:'SHA-256'},
-      baseKey,
-      {name:'AES-GCM', length:256},
-      false,
-      ['encrypt','decrypt']
-    );
-  }
+    // Secure-context check (crypto.subtle needs HTTPS or http://localhost)
+    if (!window.isSecureContext) {
+      setStatus('This page must be served over HTTPS or http://localhost for Web Crypto.', false);
+      return;
+    }
 
-  function setStatus(msg){ statusEl.textContent = msg; }
-  function guardPw(){ if(!password.value){ throw new Error('Please enter a password.'); } }
-
-  // Scramble: produce salt(16) || iv(12) || ciphertext, then URL-safe base64 encode whole blob
-  async function scramble(){
-    guardPw();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const key = await deriveKey(password.value, salt);
-    const data = enc.encode(input.value);
-    const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, data));
-
-    // assemble: salt + iv + ct
-    const blob = new Uint8Array(salt.length + iv.length + ct.length);
-    blob.set(salt, 0);
-    blob.set(iv, salt.length);
-    blob.set(ct, salt.length + iv.length);
-
-    output.value = b64UrlEncode(blob);
-    setStatus('Scrambled ✔');
-  }
-
-  // Unscramble: decode blob, slice salt(16), iv(12), rest is ciphertext
-  async function unscramble(){
-    guardPw();
-    const raw = (output.value || input.value || '').trim();
-    if(!raw){ throw new Error('Nothing to unscramble.'); }
-
-    let bytes;
+    // Wait for Argon2 WASM to be ready (bundled build exposes a ready Promise)
     try {
-      bytes = b64UrlDecode(raw);
-    } catch(e){
-      throw new Error('Invalid format: not a valid base64 string.');
+      if (window.argon2 && argon2.ready) {
+        await argon2.ready;
+      }
+    } catch (e) {
+      setStatus('Argon2 failed to initialize. Check network/CSP.', false);
+      console.error(e);
+      return;
     }
 
-    if(bytes.length <= 28){ // minimum: 16 + 12 = 28, plus some ciphertext
-      throw new Error('Data too short or corrupted.');
+    if (!window.argon2) {
+      setStatus('Error: Argon2 library failed to load.', false);
+      return;
     }
 
-    const salt = bytes.slice(0,16);
-    const iv = bytes.slice(16,28);
-    const ct = bytes.slice(28);
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
 
-    const key = await deriveKey(password.value, salt);
-    let pt;
-    try{
-      pt = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct);
-    }catch(e){
-      throw new Error('Decryption failed. Wrong password or corrupted data.');
+    const argonParams = {
+      interactive: { time: 2, mem: 65536,  parallelism: 1 }, // 32MB
+      moderate:    { time: 3, mem: 524288,  parallelism: 1 }, // 64MB
+      sensitive:   { time: 5, mem: 1048576, parallelism: 1 }  // 128MB
+    };
+
+    function updateParamInfo() {
+      const preset = argonPreset.value;
+      const p = argonParams[preset];
+      paramInfo.textContent = `Time: ${p.time}, Memory: ${p.mem/1024}MB, Parallelism: ${p.parallelism}`;
     }
-    input.value = dec.decode(pt);
-    setStatus('Unscrambled ✔');
-  }
+    argonPreset.addEventListener('change', updateParamInfo);
+    updateParamInfo();
 
-  function copyOut(){
-    if(!output.value) return setStatus('Nothing to copy.');
-    navigator.clipboard.writeText(output.value).then(()=>setStatus('Copied output.'));
-  }
+    function b64UrlEncode(buf){
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+      return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+    }
+    function b64UrlDecode(str){
+      let s = str.replace(/-/g,'+').replace(/_/g,'/');
+      const pad = (4 - (s.length % 4)) % 4;
+      s += '='.repeat(pad);
+      return Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    }
 
-  function wipe(){ input.value=''; output.value=''; password.value=''; setStatus('Cleared all fields.'); }
+    async function deriveKey(pass, salt){
+      const p = argonParams[argonPreset.value];
+      try {
+        const { hash } = await argon2.hash({
+          pass,
+          salt,
+          time: p.time,
+          mem: p.mem,
+          hashLen: 32,
+          parallelism: p.parallelism,
+          type: argon2.ArgonType.Argon2id
+        });
+        return crypto.subtle.importKey('raw', hash, { name: 'AES-GCM' }, false, ['encrypt','decrypt']);
+      } catch (e) {
+        console.error('Argon2 error:', e);
+        throw new Error('Key derivation failed. Try a lower memory preset.');
+      }
+    }
 
-  // Buttons
-  qs('#btnScramble').addEventListener('click', () => handle(scramble));
-  qs('#btnUnscramble').addEventListener('click', () => handle(unscramble));
-  qs('#btnCopy').addEventListener('click', () => handle(copyOut));
-  qs('#btnClearIn').addEventListener('click', () => { input.value=''; setStatus('Cleared input.'); });
-  qs('#btnClearOut').addEventListener('click', () => { output.value=''; setStatus('Cleared output.'); });
-  qs('#btnPaste').addEventListener('click', async () => {
-    try{
-      const t = await navigator.clipboard.readText();
-      input.value = t; setStatus('Pasted into input.');
-    }catch{ setStatus('Clipboard paste blocked by browser.'); }
-  });
-  qs('#btnWipe').addEventListener('click', wipe);
-  qs('#togglePw').addEventListener('click', () => {
-    password.type = password.type === 'password' ? 'text' : 'password';
-  });
+    function guardPw(){ 
+      if(!password.value){ throw new Error('Please enter a password.'); }
+      if(password.value.length < 4){ throw new Error('Password should be at least 4 characters.'); }
+    }
 
-  async function handle(fn){
-    try{
-      setStatus('Working…');
-      await fn();
-    }catch(err){ setStatus(err.message); }
-  }
+    async function scramble(){
+      guardPw();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const salt = crypto.getRandomValues(new Uint8Array(16));
 
-  // Drag & drop support (drop a .txt containing either plain text or the opaque string)
-  for(const area of [input, output]){
-    area.addEventListener('dragover', e=>{ e.preventDefault(); area.style.borderColor='var(--accent)'; });
-    area.addEventListener('dragleave', ()=>{ area.style.borderColor='rgba(148,163,184,.25)'; });
-    area.addEventListener('drop', async e=>{
-      e.preventDefault(); area.style.borderColor='rgba(148,163,184,.25)';
-      const file = e.dataTransfer.files?.[0];
-      if(file){ const text = await file.text(); area.value = text; setStatus('Loaded dropped file.'); }
+      setStatus('Deriving key (this may take a moment)...', true);
+      const key = await deriveKey(password.value, salt);
+
+      const data = enc.encode(input.value);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, data));
+
+      const blob = new Uint8Array(salt.length + iv.length + ct.length);
+      blob.set(salt, 0);
+      blob.set(iv, salt.length);
+      blob.set(ct, salt.length + iv.length);
+
+      output.value = b64UrlEncode(blob);
+      setStatus('Encrypted successfully ✔');
+    }
+
+    async function unscramble(){
+      guardPw();
+      const raw = (output.value || input.value || '').trim();
+      if(!raw){ throw new Error('Nothing to decrypt.'); }
+
+      let bytes;
+      try { bytes = b64UrlDecode(raw); }
+      catch{ throw new Error('Invalid format: not a valid base64 string.'); }
+
+      if(bytes.length <= 28){ throw new Error('Data too short or corrupted.'); }
+
+      const salt = bytes.slice(0,16);
+      const iv   = bytes.slice(16,28);
+      const ct   = bytes.slice(28);
+
+      setStatus('Deriving key (this may take a moment)...', true);
+      const key = await deriveKey(password.value, salt);
+
+      let pt;
+      try {
+        pt = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct);
+      } catch {
+        throw new Error('Decryption failed. Wrong password or corrupted data.');
+      }
+      input.value = dec.decode(pt);
+      setStatus('Decrypted successfully ✔');
+    }
+
+    function copyOut(){
+      if(!output.value) return setStatus('Nothing to copy.');
+      navigator.clipboard.writeText(output.value).then(()=>setStatus('Copied to clipboard.'));
+    }
+
+    function copyIn(){
+      if(!input.value) return setStatus('Nothing to copy.');
+      navigator.clipboard.writeText(input.value).then(()=>setStatus('Copied to clipboard.'));
+    }
+
+    function wipe(){ input.value=''; output.value=''; password.value=''; setStatus('All fields cleared.'); }
+
+    async function handle(fn){
+      try{ await fn(); }
+      catch(err){ setStatus(err.message); console.error(err); }
+    }
+
+    // Buttons
+    qs('#btnScramble').addEventListener('click', () => handle(scramble));
+    qs('#btnUnscramble').addEventListener('click', () => handle(unscramble));
+    qs('#btnCopy').addEventListener('click', () => handle(copyOut));
+    qs('#btnCopyIn').addEventListener('click', () => handle(copyIn));
+    qs('#btnClearIn').addEventListener('click', () => { input.value=''; setStatus('Input cleared.'); });
+    qs('#btnClearOut').addEventListener('click', () => { output.value=''; setStatus('Output cleared.'); });
+    qs('#btnWipe').addEventListener('click', wipe);
+    qs('#togglePw').addEventListener('click', () => { password.type = password.type === 'password' ? 'text' : 'password'; });
+
+    // Drag & drop
+    for(const area of [input, output]){
+      area.addEventListener('dragover', e=>{ e.preventDefault(); area.style.borderColor='var(--accent)'; });
+      area.addEventListener('dragleave', ()=>{ area.style.borderColor='rgba(148,163,184,.25)'; });
+      area.addEventListener('drop', async e=>{
+        e.preventDefault(); area.style.borderColor='rgba(148,163,184,.25)';
+        const file = e.dataTransfer.files?.[0];
+        if(file){ const text = await file.text(); area.value = text; setStatus('Loaded dropped file.'); }
+      });
+    }
+
+    // Shortcuts
+    document.addEventListener('keydown', (e)=>{
+      if(e.ctrlKey && e.key.toLowerCase()==='e'){ e.preventDefault(); handle(scramble); }
+      if(e.ctrlKey && e.key.toLowerCase()==='d'){ e.preventDefault(); handle(unscramble); }
     });
-  }
 
-  // Keyboard shortcuts
-  document.addEventListener('keydown', (e)=>{
-    if(e.ctrlKey && e.key.toLowerCase()==='e'){ e.preventDefault(); handle(scramble); }
-    if(e.ctrlKey && e.key.toLowerCase()==='d'){ e.preventDefault(); handle(unscramble); }
-  });
-})();
-</script>
+    setStatus('Ready to encrypt/decrypt.');
+  })();
+  </script>
 </body>
 </html>
