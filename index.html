@@ -9,7 +9,12 @@
       --bg:#0b1220;--card:#0f172a;--muted:#94a3b8;--text:#e2e8f0;--accent:#38bdf8;--accent-2:#22c55e;--danger:#f43f5e;
     }
     *{box-sizing:border-box}
-    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;background:radial-gradient(1200px 800px at 10% -10%,#0b2a3a 0%,transparent 60%),radial-gradient(1200px 800px at 110% 10%,#1a1f61 0%,transparent 60%),var(--bg);color:var(--text)}
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;
+      background:var(--bg);
+      color:var(--text);
+    }
     .wrap{max-width:900px;margin:40px auto;padding:24px}
     .card{background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.02));border:1px solid rgba(148,163,184,.2);border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,.35);overflow:hidden}
     header{padding:22px 22px 0}
@@ -109,7 +114,7 @@
   <!-- Hidden file input for opening files -->
   <input type="file" id="fileInput" accept=".txt,.text,.json,.md" hidden />
 
-  <!-- Load argon2-browser (bundled; exposes window.argon2) -->
+  <!-- Load argon2-browser -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/argon2-browser/1.18.0/argon2-bundled.min.js"></script>
 
   <script>
@@ -137,20 +142,8 @@
       return;
     }
 
-    try {
-      if (window.argon2 && argon2.ready) {
-        await argon2.ready;
-      }
-    } catch (e) {
-      setStatus('Argon2 failed to initialize. Check network/CSP.', false);
-      console.error(e);
-      return;
-    }
-
-    if (!window.argon2) {
-      setStatus('Error: Argon2 library failed to load.', false);
-      return;
-    }
+    try { if (window.argon2 && argon2.ready) await argon2.ready; } catch(e){ setStatus('Argon2 failed to initialize.', false); return; }
+    if (!window.argon2) { setStatus('Error: Argon2 library failed to load.', false); return; }
 
     const enc = new TextEncoder();
     const dec = new TextDecoder();
@@ -203,18 +196,14 @@
       guardPw();
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const salt = crypto.getRandomValues(new Uint8Array(16));
-
       setStatus('Deriving key (this may take a moment)...', true);
       const key = await deriveKey(password.value, salt);
-
       const data = enc.encode(input.value);
       const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, data));
-
       const blob = new Uint8Array(salt.length + iv.length + ct.length);
       blob.set(salt, 0);
       blob.set(iv, salt.length);
       blob.set(ct, salt.length + iv.length);
-
       output.value = b64UrlEncode(blob);
       setStatus('Encrypted successfully ✔');
     }
@@ -223,40 +212,22 @@
       guardPw();
       const raw = (output.value || input.value || '').trim();
       if(!raw){ throw new Error('Nothing to decrypt.'); }
-
       let bytes;
-      try { bytes = b64UrlDecode(raw); }
-      catch{ throw new Error('Invalid format: not a valid base64 string.'); }
-
+      try { bytes = b64UrlDecode(raw); } catch{ throw new Error('Invalid format: not a valid base64 string.'); }
       if(bytes.length <= 28){ throw new Error('Data too short or corrupted.'); }
-
       const salt = bytes.slice(0,16);
       const iv   = bytes.slice(16,28);
       const ct   = bytes.slice(28);
-
       setStatus('Deriving key (this may take a moment)...', true);
       const key = await deriveKey(password.value, salt);
-
       let pt;
-      try {
-        pt = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct);
-      } catch {
-        throw new Error('Decryption failed. Wrong password or corrupted data.');
-      }
+      try { pt = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct); } catch { throw new Error('Decryption failed.'); }
       input.value = dec.decode(pt);
       setStatus('Decrypted successfully ✔');
     }
 
-    function copyOut(){
-      if(!output.value) return setStatus('Nothing to copy.');
-      navigator.clipboard.writeText(output.value).then(()=>setStatus('Copied to clipboard.'));
-    }
-
-    function copyIn(){
-      if(!input.value) return setStatus('Nothing to copy.');
-      navigator.clipboard.writeText(input.value).then(()=>setStatus('Copied to clipboard.'));
-    }
-
+    function copyOut(){ if(!output.value) return setStatus('Nothing to copy.'); navigator.clipboard.writeText(output.value).then(()=>setStatus('Copied to clipboard.')); }
+    function copyIn(){ if(!input.value) return setStatus('Nothing to copy.'); navigator.clipboard.writeText(input.value).then(()=>setStatus('Copied to clipboard.')); }
     function wipe(){ input.value=''; output.value=''; password.value=''; setStatus('All fields cleared.'); }
 
     async function saveAsText(text, defaultName) {
@@ -272,59 +243,33 @@
         URL.revokeObjectURL(url);
         return;
       }
-
       try {
         const handle = await window.showSaveFilePicker({
           suggestedName: defaultName,
-          types: [
-            {
-              description: 'Text',
-              accept: {
-                'text/plain': ['.txt'],
-              }
-            }
-          ]
+          types: [{ description: 'Text', accept: { 'text/plain': ['.txt'] } }]
         });
-
         const writable = await handle.createWritable();
         await writable.write(text);
         await writable.close();
         setStatus(`Saved as ${handle.name}`);
       } catch (err) {
-        if (err.name !== 'AbortError') {
-          setStatus('Save failed.');
-          console.error(err);
-        } else {
-          setStatus('Save canceled.');
-        }
+        if (err.name !== 'AbortError') setStatus('Save failed.');
+        else setStatus('Save canceled.');
       }
     }
 
-    function openFile(targetElement) {
-      currentFileTarget = targetElement;
-      fileInput.click();
-    }
-
+    function openFile(targetElement) { currentFileTarget = targetElement; fileInput.click(); }
     fileInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       try {
         const text = await file.text();
-        if (currentFileTarget) {
-          currentFileTarget.value = text;
-          setStatus(`Loaded ${file.name}`);
-        }
-      } catch (err) {
-        setStatus('Error reading file.');
-        console.error(err);
-      }
+        if (currentFileTarget) { currentFileTarget.value = text; setStatus(`Loaded ${file.name}`); }
+      } catch { setStatus('Error reading file.'); }
       fileInput.value = '';
     });
 
-    async function handle(fn){
-      try{ await fn(); }
-      catch(err){ setStatus(err.message); console.error(err); }
-    }
+    async function handle(fn){ try{ await fn(); } catch(err){ setStatus(err.message); } }
 
     // Buttons
     qs('#btnScramble').addEventListener('click', () => handle(scramble));
@@ -335,46 +280,23 @@
     qs('#btnClearOut').addEventListener('click', () => { output.value=''; setStatus('Output cleared.'); });
     qs('#btnWipe').addEventListener('click', wipe);
     qs('#togglePw').addEventListener('click', () => { password.type = password.type === 'password' ? 'text' : 'password'; });
-    
-    // Open / Save buttons
     qs('#btnOpenIn').addEventListener('click', () => openFile(input));
     qs('#btnOpenOut').addEventListener('click', () => openFile(output));
-    qs('#btnSaveIn').addEventListener('click', async () => {
-      if (!input.value) return setStatus('Nothing to save.');
-      await saveAsText(input.value, 'input.txt');
-    });
-    qs('#btnSaveOut').addEventListener('click', async () => {
-      if (!output.value) return setStatus('Nothing to save.');
-      await saveAsText(output.value, 'output.txt');
-    });
+    qs('#btnSaveIn').addEventListener('click', async () => { if(!input.value) return setStatus('Nothing to save.'); await saveAsText(input.value,'input.txt'); });
+    qs('#btnSaveOut').addEventListener('click', async () => { if(!output.value) return setStatus('Nothing to save.'); await saveAsText(output.value,'output.txt'); });
 
     // Drag & drop
     for(const area of [input, output]){
       area.addEventListener('dragover', e=>{ e.preventDefault(); area.style.borderColor='var(--accent)'; });
       area.addEventListener('dragleave', ()=>{ area.style.borderColor='rgba(148,163,184,.25)'; });
-      area.addEventListener('drop', async e=>{
-        e.preventDefault(); area.style.borderColor='rgba(148,163,184,.25)';
-        const file = e.dataTransfer.files?.[0];
-        if(file){ const text = await file.text(); area.value = text; setStatus('Loaded dropped file.'); }
-      });
+      area.addEventListener('drop', async e=>{ e.preventDefault(); area.style.borderColor='rgba(148,163,184,.25)'; const file=e.dataTransfer.files?.[0]; if(file){ const text=await file.text(); area.value=text; setStatus('Loaded dropped file.'); } });
     }
 
     // Shortcuts
-    document.addEventListener('keydown', (e)=>{
-      if(e.ctrlKey && e.key.toLowerCase()==='e'){ e.preventDefault(); handle(scramble); }
-      if(e.ctrlKey && e.key.toLowerCase()==='d'){ e.preventDefault(); handle(unscramble); }
-    });
+    document.addEventListener('keydown', (e)=>{ if(e.ctrlKey&&e.key.toLowerCase()==='e'){ e.preventDefault(); handle(scramble); } if(e.ctrlKey&&e.key.toLowerCase()==='d'){ e.preventDefault(); handle(unscramble); } });
 
     setStatus('Ready to encrypt/decrypt.');
   })();
   </script>
 </body>
 </html>
-
-
-
-
-
-
-
-
